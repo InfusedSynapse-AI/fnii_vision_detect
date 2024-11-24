@@ -21,6 +21,7 @@ add_message_files(
   Pixel.msg
   Object.msg
   Objects.msg
+  MultiStreamObjects.msg
 )
 
 ## Generate services in the 'srv' folder

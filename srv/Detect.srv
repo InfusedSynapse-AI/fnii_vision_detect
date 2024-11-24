@@ -4,10 +4,10 @@ string depth_topic
 string depth_cam_info
 # sensor_msgs/Image rgb_ros_img
 # sensor_msgs/Image depth_ros_img
+
 # sensor_msgs/CameraInfo depth_ros_img
-bool output_centor_point
-uint8 cal_centor_method #0: bbox centor, 1: 2d geometric center 2: 2d point avaverage, 3: 3d geometric center
+uint8 cal_centor_method #0: bbox centor, 1: geometric center
 ---
-fnii_vision_detect/Objects results
+fnii_vision_detect/MultiStreamObjects results
 string err_msg
 bool success

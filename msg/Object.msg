@@ -1,6 +1,8 @@
-string class
-fnii_vision_detect/Pixel[] masks
-fnii_vision_detect/Pixel[] keypoints
-fnii_vision_detect/Pixel[] bboxs
+string object_name
+int64[] mask
+uint32 mask_height 
+uint32 mask_width 
+int64[] keypoints
+int64[] bboxs
 float32 confidence
 geometry_msgs/Point centor_point
