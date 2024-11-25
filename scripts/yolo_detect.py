@@ -11,18 +11,16 @@ import sensor_msgs.point_cloud2 as pc2
 class YoloDetect:
     def __init__(
         self,
-        ros_nh,
         model: str = "",
         imgsiz: int = 640,
         conf: int = 0.5,
     ):
-        self.nh_ = ros_nh
         if model == "":
             rospy.logerr("please set model")
             raise ValueError("please set model")
         else:
             self.model_ = YOLO(model)
-            self.model_.MODE(imgsize=imgsiz, conf=conf)
+            # self.model_.MODE(imgsize=imgsiz, conf=conf)
             rospy.ServiceProxy("detect", Detect, self.detect_callback)
             self.result_pub = rospy.Publisher("/detect_results", MultiStreamObjects, queue_size=10)
             self.result_img = list[np.ndarray]
@@ -58,7 +56,7 @@ class YoloDetect:
         results = self.model_(cv_image)
         return results
 
-    def detect_fron_ndarray(self, img: np.ndarray):
+    def detect_from_ndarray(self, img: np.ndarray):
         results = self.model_(img)
         return results
 
@@ -138,7 +136,7 @@ class YoloDetect:
 
         return largest_cluster_points
 
-    def get_centor_point(self, points:np.array):
+    def get_centor_point(self, points:np.ndarray):
         return points.mean(axis=0)
 
     def get_mask_depth(self, mask, depth:np.ndarray):
