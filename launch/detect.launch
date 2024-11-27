@@ -1,0 +1,5 @@
+<launch>
+    <node pkg="fnii_vision_detect" type="node.py" name="yolo_segment_node">
+        <param name="weight" value="$(find fnii_vision_detect)/weights/yolo11m-seg.pt"/>
+    </node>
+</launch>

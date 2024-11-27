@@ -1,13 +1,18 @@
 # YOLO 11
 from ultralytics import YOLO
 import rospy
-from sensor_msgs.msg import Image, CameraInfo, PointCloud2
+from sensor_msgs.msg import Image, CameraInfo
 import numpy as np
 from cv_bridge import CvBridge
-from fnii_vision_detect.srv import Detect, DetectResponse
+from fnii_vision_detect.srv import Detect, DetectResponse, DetectRequest
 from fnii_vision_detect.msg import Object, Objects, MultiStreamObjects
 import open3d as o3d
 import sensor_msgs.point_cloud2 as pc2
+from get_point import GetPoint
+import math
+import cv2
+
+
 class YoloDetect:
     def __init__(
         self,
@@ -21,35 +26,154 @@ class YoloDetect:
         else:
             self.model_ = YOLO(model)
             # self.model_.MODE(imgsize=imgsiz, conf=conf)
-            rospy.ServiceProxy("detect", Detect, self.detect_callback)
-            self.result_pub = rospy.Publisher("/detect_results", MultiStreamObjects, queue_size=10)
-            self.result_img = list[np.ndarray]
+            self.server = rospy.Service("detect", Detect, self.detect_callback)
+            self.result_pub = rospy.Publisher(
+                "detect_results", MultiStreamObjects, queue_size=10, latch=True
+            )
+            self.result_img_pub = rospy.Publisher(
+                "detect_results_img", Image, queue_size=10, latch=True
+            )
+            self.result_img = []
+            self.get_point_tool = GetPoint()
 
-    def ros_img_to_cv(self, img):
+    def ros_img_to_cv(self, img, encoding="bgr8"):
         bridge = CvBridge()
-        cv_image = bridge.imgmsg_to_cv2(img, "bgr8")
+        cv_image = bridge.imgmsg_to_cv2(img, encoding)
         return cv_image
 
-    def cv_to_ros_img(self, cv_image):
+    def cv_to_ros_img(self, cv_image, encoding="bgr8"):
         bridge = CvBridge()
-        ros_image = bridge.cv2_to_imgmsg(cv_image, "bgr8")
+        ros_image = bridge.cv2_to_imgmsg(cv_image, encoding)
         return ros_image
 
-    def detect_callback(self, req):
+    def detect_callback(self, req: DetectRequest):
         res = DetectResponse()
+
         try:
-            ros_rgb = rospy.wait_for_message(req.rgb_topic, Image, timeout=2)
-            res.results = self.process_yolo_result2fnii_ros_objects(self.detect_from_ros_img(ros_rgb))
-            if len(res.results.results)==0:
+            ros_rgb = rospy.wait_for_message(req.rgb_topic, Image)
+            ros_depth = None
+            if req.depth_topic != "" and req.depth_cam_info != "":
+                ros_depth = rospy.wait_for_message(req.depth_topic, Image)
+                depth_cam_info = rospy.wait_for_message(req.depth_cam_info, CameraInfo)
+                self.get_point_tool.set_camera_info_from_msg(depth_cam_info)
+                print("will cauculate point after detect")
+
+            detect_results = self.process_yolo_result2fnii_ros_objects(
+                self.detect_from_ros_img(ros_rgb), req.target_class
+            )
+            if len(detect_results.results) == 0:
                 res.err_msg = "no object find"
             else:
+                if ros_depth is not None:
+                    depth_image = self.ros_img_to_cv(ros_depth, encoding="passthrough")
+                    # detect_results 考虑到多个输入源的情况，但目前只考虑一个输入源
+                    for objs in detect_results.results:
+                        combined_img = None
+                        for obj in objs.objects:
+                            if req.cal_centor_method == 1:
+                                if len(obj.mask) == 0:
+                                    print(
+                                        "no mask, can't get geometry_center, and will caluculate centor by bbox"
+                                    )
+                                    bbox = np.array(obj.bboxs).reshape((2, 2))
+                                    point_pixel = bbox.mean(axis=0)
+                                    point_pixel = point_pixel.astype(int)
+                                    point = (
+                                        self.get_point_tool.get_one_point_from_depth(
+                                            depth_image,
+                                            point_pixel[0],
+                                            point_pixel[1],
+                                            auto_fix=True,
+                                        )
+                                    )
+                                    if point is not None:
+                                        obj.centor_point.x = point[0]
+                                        obj.centor_point.y = point[1]
+                                        obj.centor_point.z = point[2]
+                                else:
+                                    height = obj.mask_height
+                                    width = obj.mask_width
+                                    mymask = np.array(obj.mask)
+                                    mask_tmp = mymask.reshape((height, width))
+                                    masked_depth = depth_image.copy()
+                                    masked_depth[mask_tmp == 0] = 0
+                                    if combined_img is None:
+                                        combined_img = masked_depth
+                                    else:
+                                        combined_img = np.maximum(
+                                            combined_img, masked_depth
+                                        )
+                                    points = self.get_point_tool.get_points_from_depth(
+                                        masked_depth, need_cluster=True
+                                    )
+                                    if len(points) > 0:
+                                        print(len(points))
+                                        mean_point = np.mean(points[0], axis=0)
+                                        obj.centor_point.x = mean_point[0]
+                                        obj.centor_point.y = mean_point[1]
+                                        obj.centor_point.z = mean_point[2]
+                            elif req.cal_centor_method == 2:
+                                if len(obj.keypoints) == 0:
+                                    print(
+                                        "no keypoints, can't get geometry_center, and will caluculate centor by bbox"
+                                    )
+                                    bbox = np.array(obj.bboxs).reshape((2, 2))
+                                    point_pixel = bbox.mean(axis=0)
+                                    point_pixel = point_pixel.astype(int)
+                                    point = (
+                                        self.get_point_tool.get_one_point_from_depth(
+                                            depth_image,
+                                            point_pixel[0],
+                                            point_pixel[1],
+                                            auto_fix=True,
+                                        )
+                                    )
+                                    if point is not None:
+                                        obj.centor_point.x = point[0]
+                                        obj.centor_point.y = point[1]
+                                        obj.centor_point.z = point[2]
+                                else:
+                                    keypoints = np.array(obj.keypoints).reshape((2, 2))
+                                    point_pixel = keypoints.mean(axis=0)
+                                    point = (
+                                        self.get_point_tool.get_one_point_from_depth(
+                                            depth_image,
+                                            point_pixel[0],
+                                            point_pixel[1],
+                                            auto_fix=True,
+                                            fix_ux=keypoints
+                                        )
+                                    )
+                                    if point is not None:
+                                        obj.centor_point.x = point[0]
+                                        obj.centor_point.y = point[1]
+                                        obj.centor_point.z = point[2]
+                            else:
+                                bbox = np.array(obj.bboxs).reshape((2, 2))
+                                point_pixel = bbox.mean(axis=0)
+                                point_pixel = point_pixel.astype(int)
+                                point = self.get_point_tool.get_one_point_from_depth(
+                                    depth_image,
+                                    point_pixel[0],
+                                    point_pixel[1],
+                                    auto_fix=True,
+                                )
+                                if point is not None:
+                                    obj.centor_point.x = point[0]
+                                    obj.centor_point.y = point[1]
+                                    obj.centor_point.z = point[2]
+                        if combined_img is not None:
+                            combined_img = self.depth_to_gray_color(combined_img)
+                            self.result_img.append(combined_img)
+                self.result_pub.publish(detect_results)
+                img = self.stitch_n_images_cv2(self.result_img, (1280, 960))
+                self.result_img_pub.publish(self.cv_to_ros_img(img))
+                res.results = detect_results
                 res.success = True
-            
         except rospy.ROSException as e:
             rospy.logerr(e)
-            res.err_msg = f"rgb topic: {req.rgb_topic} not pub"
+            res.err_msg = f"topic: {req.rgb_topic} not pub"
         return res
-
 
     def detect_from_ros_img(self, img: Image):
         cv_image = self.ros_img_to_cv(img)
@@ -60,7 +184,9 @@ class YoloDetect:
         results = self.model_(img)
         return results
 
-    def process_yolo_result2fnii_ros_objects(self, yolo_results, target: str = ""):
+    def process_yolo_result2fnii_ros_objects(
+        self, yolo_results, target: str = ""
+    ) -> MultiStreamObjects:
         my_results = MultiStreamObjects()
         self.result_img.clear()
         for result in yolo_results:
@@ -71,7 +197,7 @@ class YoloDetect:
                 tmp_object = Object()
                 tmp_array = []
                 tmp_object.object_name = result.names[int(class_names[idx])]
-                if target!="" and tmp_object.object_name!=target:
+                if target != "" and tmp_object.object_name != target:
                     continue
                 tmp_object.bboxs = res.boxes.xyxy.cpu().numpy()[0].astype(np.uint32)
                 tmp_object.confidence = res.boxes.conf.cpu().numpy()[0].astype(float)
@@ -81,71 +207,78 @@ class YoloDetect:
                     tmp_object.mask_width = len(tmp_array[0])
                     for a in tmp_array:
                         tmp_object.mask.extend(a)
+
                 if res.keypoints is not None:
                     tmp_array = res.keypoints.data.cpu().numpy().astype(int)
                     for keypoint in tmp_array[0]:
                         tmp_object.keypoints.extend(keypoint)
                 objects.objects.append(tmp_object)
-            if len(objects.objects)>0:
+            if len(objects.objects) > 0:
                 my_results.results.append(objects)
         return my_results
-    def pointcloud2_to_array(self, cloud_msg:PointCloud2):
+
+    def depth_to_gray_color(self, depth_image):
         """
-        Convert a ROS PointCloud2 message to a numpy array without using ros_numpy.
-
-        Args:
-            pointcloud2 (PointCloud2): The PointCloud2 message.
-
-        Returns:
-            tuple: Tuple containing (xyz, rgb) arrays.
+        将深度图转换为灰度图，方便显示。
         """
-        # 使用 point_cloud2.read_points() 来读取点云数据
-        # 读取 XYZ 坐标和 RGB 数据
-        points_list = pc2.read_points(cloud_msg, field_names=("x", "y", "z"), skip_nans=False)
-
-        # 将生成器转换为一个 NumPy 数组
-        points_array = np.array(list(points_list))
+        depth_image = np.clip(depth_image, 0, 3)
+        grayscale_image = (depth_image * 50).astype(np.uint8)
         
-        xyz = points_array[:, :3]  # 前三列是 (x, y, z) 坐标
-        
-        # 将 xyz 重塑为高度和宽度的形状
-        xyz = xyz.reshape((cloud_msg.height, cloud_msg.width, 3))
-        
-        # 将包含 NaN 的行处理为 [0, 0, 0]，以防止损坏的数据
-        nan_rows = np.isnan(xyz).all(axis=2)
-        xyz[nan_rows] = [0, 0, 0]
-        return xyz
-    def get_mask_o3d_point(self, mask, cloud_msgs:PointCloud2):
-        xyz = self.pointcloud2_to_array(cloud_msgs)
-        mask_expanded = np.stack([mask, mask, mask], axis=2)
-        obj_xyz = xyz * mask_expanded
-        pcd = o3d.geometry.PointCloud()
-        pcd.points = o3d.utility.Vector3dVector(obj_xyz.reshape((cloud_msgs.height * cloud_msgs.width, 3)))
-        labels = np.array(pcd.cluster_dbscan(eps=0.02, min_points=10, print_progress=True))
-        max_label = labels.max()
-        # 统计每个聚类的点数
-        unique_labels, counts = np.unique(labels, return_counts=True)
-        # 找到点数最多的聚类（排除噪声点 -1）
-        largest_cluster_label = unique_labels[np.argmax(counts[unique_labels >= 0])]
-        largest_cluster_indices = np.where(labels == largest_cluster_label)[0]
-        largest_cluster_points = np.asarray(pcd.points)[largest_cluster_indices]
-        # 创建一个新的点云，仅包含最大的聚类
-        # largest_cluster_pcd = o3d.geometry.PointCloud()
-        # largest_cluster_pcd.points = o3d.utility.Vector3dVector(largest_cluster_points)
-        # return largest_cluster_pcd
+        # grayscale_image = cv2.applyColorMap(grayscale_image, cv2.COLORMAP_JET)
+        # cv2.imwrite("depth.jpg", grayscale_image)
+        return cv2.cvtColor(grayscale_image, cv2.COLOR_GRAY2BGR)
 
-        return largest_cluster_points
+    def resize_and_pad_cv2(self, image, target_size):
+        """
+        使用 OpenCV 调整图片大小以适配目标尺寸，同时保持宽高比。
+        用黑色填充剩余部分，使图片尺寸与目标一致。
+        """
+        h, w = image.shape[:2]
+        target_w, target_h = target_size
+        scale = min(target_w / w, target_h / h)  # 缩放比例，保证不变形
+        new_w, new_h = int(w * scale), int(h * scale)  # 计算缩放后的尺寸
+        resized = cv2.resize(
+            image, (new_w, new_h), interpolation=cv2.INTER_AREA
+        )  # 缩放图片
 
-    def get_centor_point(self, points:np.ndarray):
-        return points.mean(axis=0)
+        # 创建黑色背景并将图片粘贴到中心
+        padded_image = np.ones((target_h, target_w, 3), dtype=np.uint8)*255
+        offset_x = (target_w - new_w) // 2
+        offset_y = (target_h - new_h) // 2
+        padded_image[offset_y : offset_y + new_h, offset_x : offset_x + new_w] = resized
+        return padded_image
 
-    def get_mask_depth(self, mask, depth:np.ndarray):
-        obj = depth[mask == 1]
-        obj = obj[~np.isnan(obj)]
+    def stitch_n_images_cv2(self, images, output_size=(640, 480)):
+        """
+        使用 OpenCV 将 n 张图片按行列动态排列，生成指定大小的图片（默认 640, 480）。
+        如果图片不足，空白区域用黑色填充。
+        """
+        n = len(images)
+        if n == 0:
+            return np.zeros(
+                (output_size[1], output_size[0], 3), dtype=np.uint8
+            )  # 返回全黑图片
 
+        # 动态计算行数和列数
+        rows = math.ceil(math.sqrt(n))  # 行数
+        cols = math.ceil(n / rows)  # 列数
 
+        # 每个子图的目标大小
+        sub_width = output_size[0] // cols
+        sub_height = output_size[1] // rows
 
+        # 创建最终拼接的黑色背景图片
+        stitched_image = np.ones((output_size[1], output_size[0], 3), dtype=np.uint8)*255
 
-                
+        for idx, img in enumerate(images):
+            resized_img = self.resize_and_pad_cv2(
+                img, (sub_width, sub_height)
+            )  # 调整大小并填充
+            # 计算子图位置
+            row, col = divmod(idx, cols)
+            x_start, y_start = col * sub_width, row * sub_height
+            stitched_image[
+                y_start : y_start + sub_height, x_start : x_start + sub_width
+            ] = resized_img  # 放置图片
 
-            
+        return stitched_image

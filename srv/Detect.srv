@@ -1,12 +1,13 @@
 string rgb_topic
 # uint8 video_idx
+string target_class #if empty, detect all classes
 string depth_topic
 string depth_cam_info
 # sensor_msgs/Image rgb_ros_img
 # sensor_msgs/Image depth_ros_img
 
 # sensor_msgs/CameraInfo depth_ros_img
-uint8 cal_centor_method #0: bbox centor, 1: geometric center
+uint8 cal_centor_method #0: bbox centor, 1: geometric center, 2: keypoint center
 ---
 fnii_vision_detect/MultiStreamObjects results
 string err_msg
