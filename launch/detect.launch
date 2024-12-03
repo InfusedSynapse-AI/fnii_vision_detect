@@ -1,7 +1,7 @@
 <launch>
     <group ns="segment">
         <node pkg="fnii_vision_detect" type="node.py" name="yolo_segment_node">
-            <param name="weight" value="$(find fnii_vision_detect)/weights/fnii_seg_m.pt"/>
+            <param name="weight" value="$(find fnii_vision_detect)/weights/yolo11m-seg.pt"/>
         </node>
     </group>
     <group ns="keypoint">
