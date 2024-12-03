@@ -51,16 +51,19 @@ class YoloDetect:
         ros_image = bridge.cv2_to_imgmsg(cv_image, encoding)
         return ros_image
     def get_transform(self, ref_frame, frame_id, time=1.0):
-        self.listener.waitForTransform(ref_frame, frame_id, rospy.Time(0), rospy.Duration(time))
-        # while not rospy.is_shutdown():
-        try:
-            transform = self.tf_buffer.lookup_transform(ref_frame,
-                frame_id, rospy.Time(0.5), rospy.Duration(0.1)
-            )
-            return transform
-        except Exception as e:
-            rospy.logwarn(e)
-            return None
+        # self.listener.waitForTransform(ref_frame, frame_id, rospy.Time(0), rospy.Duration(time))
+        try_time = 0
+        while not rospy.is_shutdown():
+            try:
+                transform = self.tf_buffer.lookup_transform(
+                    ref_frame, frame_id, rospy.Time(0.5), rospy.Duration(0.1)
+                )
+                return transform
+            except Exception as e:
+                try_time += 1
+                if try_time > 20:
+                    rospy.logerr(e)
+                    return None
     def detect_callback(self, req: DetectRequest):
         res = DetectResponse()
         res.success = True
@@ -85,7 +88,7 @@ class YoloDetect:
                     if req.frame_id != "":
                         transform = self.get_transform(req.frame_id,
                             ros_depth.header.frame_id, 0.5)
-                        
+
                     depth_image = self.ros_img_to_cv(ros_depth, encoding="passthrough")
                     # detect_results 考虑到多个输入源的情况，但目前只考虑一个输入源
                     for objs in detect_results.results:
@@ -251,7 +254,7 @@ class YoloDetect:
         """
         depth_image = np.clip(depth_image, 0, 3)
         grayscale_image = (depth_image * 50).astype(np.uint8)
-        
+
         # grayscale_image = cv2.applyColorMap(grayscale_image, cv2.COLORMAP_JET)
         # cv2.imwrite("depth.jpg", grayscale_image)
         return cv2.cvtColor(grayscale_image, cv2.COLOR_GRAY2BGR)
