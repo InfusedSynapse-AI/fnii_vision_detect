@@ -2,6 +2,9 @@
 from ultralytics import YOLO
 import rospy
 from sensor_msgs.msg import Image, CameraInfo
+from geometry_msgs.msg import Point, Pose, Quaternion
+import tf2_geometry_msgs
+from tf2_ros import Buffer, TransformListener
 import numpy as np
 from cv_bridge import CvBridge
 from fnii_vision_detect.srv import Detect, DetectResponse, DetectRequest
@@ -35,6 +38,8 @@ class YoloDetect:
             )
             self.result_img = []
             self.get_point_tool = GetPoint()
+            self.tf_buffer = Buffer()
+            self.listener = TransformListener(self.tf_buffer)
 
     def ros_img_to_cv(self, img, encoding="bgr8"):
         bridge = CvBridge()
@@ -45,10 +50,20 @@ class YoloDetect:
         bridge = CvBridge()
         ros_image = bridge.cv2_to_imgmsg(cv_image, encoding)
         return ros_image
-
+    def get_transform(self, ref_frame, frame_id, time=1.0):
+        self.listener.waitForTransform(ref_frame, frame_id, rospy.Time(0), rospy.Duration(time))
+        # while not rospy.is_shutdown():
+        try:
+            transform = self.tf_buffer.lookup_transform(ref_frame,
+                frame_id, rospy.Time(0.5), rospy.Duration(0.1)
+            )
+            return transform
+        except Exception as e:
+            rospy.logwarn(e)
+            return None
     def detect_callback(self, req: DetectRequest):
         res = DetectResponse()
-
+        res.success = True
         try:
             ros_rgb = rospy.wait_for_message(req.rgb_topic, Image)
             ros_depth = None
@@ -62,9 +77,15 @@ class YoloDetect:
                 self.detect_from_ros_img(ros_rgb), req.target_class
             )
             if len(detect_results.results) == 0:
+                res.success = False
                 res.err_msg = "no object find"
             else:
                 if ros_depth is not None:
+                    transform = None
+                    if req.frame_id != "":
+                        transform = self.get_transform(req.frame_id,
+                            ros_depth.header.frame_id, 0.5)
+                        
                     depth_image = self.ros_img_to_cv(ros_depth, encoding="passthrough")
                     # detect_results 考虑到多个输入源的情况，但目前只考虑一个输入源
                     for objs in detect_results.results:
@@ -72,9 +93,6 @@ class YoloDetect:
                         for obj in objs.objects:
                             if req.cal_centor_method == 1:
                                 if len(obj.mask) == 0:
-                                    print(
-                                        "no mask, can't get geometry_center, and will caluculate centor by bbox"
-                                    )
                                     bbox = np.array(obj.bboxs).reshape((2, 2))
                                     point_pixel = bbox.mean(axis=0)
                                     point_pixel = point_pixel.astype(int)
@@ -87,9 +105,11 @@ class YoloDetect:
                                         )
                                     )
                                     if point is not None:
-                                        obj.centor_point.x = point[0]
-                                        obj.centor_point.y = point[1]
-                                        obj.centor_point.z = point[2]
+                                        tmp_ros_point = Point()
+                                        tmp_ros_point.x = point[0]
+                                        tmp_ros_point.y = point[1]
+                                        tmp_ros_point.z = point[2]
+                                        obj.centor_point.append(tmp_ros_point)
                                 else:
                                     height = obj.mask_height
                                     width = obj.mask_width
@@ -107,11 +127,12 @@ class YoloDetect:
                                         masked_depth, need_cluster=True
                                     )
                                     if len(points) > 0:
-                                        print(len(points))
                                         mean_point = np.mean(points[0], axis=0)
-                                        obj.centor_point.x = mean_point[0]
-                                        obj.centor_point.y = mean_point[1]
-                                        obj.centor_point.z = mean_point[2]
+                                        tmp_ros_point = Point()
+                                        tmp_ros_point.x = mean_point[0]
+                                        tmp_ros_point.y = mean_point[1]
+                                        tmp_ros_point.z = mean_point[2]
+                                        obj.centor_point.append(tmp_ros_point)
                             elif req.cal_centor_method == 2:
                                 if len(obj.keypoints) == 0:
                                     print(
@@ -129,9 +150,11 @@ class YoloDetect:
                                         )
                                     )
                                     if point is not None:
-                                        obj.centor_point.x = point[0]
-                                        obj.centor_point.y = point[1]
-                                        obj.centor_point.z = point[2]
+                                        tmp_ros_point = Point()
+                                        tmp_ros_point.x = point[0]
+                                        tmp_ros_point.y = point[1]
+                                        tmp_ros_point.z = point[2]
+                                        obj.centor_point.append(tmp_ros_point)
                                 else:
                                     keypoints = np.array(obj.keypoints).reshape((2, 2))
                                     point_pixel = keypoints.mean(axis=0)
@@ -145,9 +168,11 @@ class YoloDetect:
                                         )
                                     )
                                     if point is not None:
-                                        obj.centor_point.x = point[0]
-                                        obj.centor_point.y = point[1]
-                                        obj.centor_point.z = point[2]
+                                        tmp_ros_point = Point()
+                                        tmp_ros_point.x = point[0]
+                                        tmp_ros_point.y = point[1]
+                                        tmp_ros_point.z = point[2]
+                                        obj.centor_point.append(tmp_ros_point)
                             else:
                                 bbox = np.array(obj.bboxs).reshape((2, 2))
                                 point_pixel = bbox.mean(axis=0)
@@ -159,9 +184,13 @@ class YoloDetect:
                                     auto_fix=True,
                                 )
                                 if point is not None:
-                                    obj.centor_point.x = point[0]
-                                    obj.centor_point.y = point[1]
-                                    obj.centor_point.z = point[2]
+                                    tmp_ros_point = Point()
+                                    tmp_ros_point.x = point[0]
+                                    tmp_ros_point.y = point[1]
+                                    tmp_ros_point.z = point[2]
+                                    obj.centor_point.append(tmp_ros_point)
+                            if transform is not None and len(obj.centor_point) > 0:
+                                obj.centor_point = tf2_geometry_msgs.do_transform_point(obj.centor_point, transform).point
                         if combined_img is not None:
                             combined_img = self.depth_to_gray_color(combined_img)
                             self.result_img.append(combined_img)
@@ -169,7 +198,6 @@ class YoloDetect:
                 img = self.stitch_n_images_cv2(self.result_img, (1280, 960))
                 self.result_img_pub.publish(self.cv_to_ros_img(img))
                 res.results = detect_results
-                res.success = True
         except rospy.ROSException as e:
             rospy.logerr(e)
             res.err_msg = f"topic: {req.rgb_topic} not pub"

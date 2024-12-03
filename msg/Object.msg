@@ -5,4 +5,4 @@ uint32 mask_height
 uint32 mask_width 
 string object_name
 float32 confidence
-geometry_msgs/Point centor_point
+geometry_msgs/Point[] centor_point

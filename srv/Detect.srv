@@ -3,6 +3,7 @@ string rgb_topic
 string target_class #if empty, detect all classes
 string depth_topic
 string depth_cam_info
+string frame_id
 # sensor_msgs/Image rgb_ros_img
 # sensor_msgs/Image depth_ros_img
 
