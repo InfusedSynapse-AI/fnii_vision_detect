@@ -9,4 +9,9 @@
             <param name="weight" value="$(find fnii_vision_detect)/weights/handle_pose.pt"/>
         </node>
     </group>
+    <group ns="detect">
+        <node pkg="fnii_vision_detect" type="node.py" name="detect_node">
+            <param name="weight" value="$(find fnii_vision_detect)/weights/drinks_detect.pt"/>
+        </node>
+    </group>
 </launch>
