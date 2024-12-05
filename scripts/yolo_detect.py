@@ -2,7 +2,7 @@
 from ultralytics import YOLO
 import rospy
 from sensor_msgs.msg import Image, CameraInfo
-from geometry_msgs.msg import Point, Pose, Quaternion
+from geometry_msgs.msg import Point, Pose, Quaternion, PointStamped
 import tf2_geometry_msgs
 from tf2_ros import Buffer, TransformListener
 import numpy as np
@@ -28,7 +28,6 @@ class YoloDetect:
             raise ValueError("please set model")
         else:
             self.model_ = YOLO(model)
-            # self.model_.MODE(imgsize=imgsiz, conf=conf)
             self.server = rospy.Service("detect", Detect, self.detect_callback)
             self.result_pub = rospy.Publisher(
                 "detect_results", MultiStreamObjects, queue_size=10, latch=True
@@ -56,7 +55,7 @@ class YoloDetect:
         while not rospy.is_shutdown():
             try:
                 transform = self.tf_buffer.lookup_transform(
-                    ref_frame, frame_id, rospy.Time(0.5), rospy.Duration(0.1)
+                    ref_frame, frame_id, rospy.Time(), rospy.Duration(1.0)
                 )
                 return transform
             except Exception as e:
@@ -97,8 +96,7 @@ class YoloDetect:
                             if req.cal_centor_method == 1:
                                 if len(obj.mask) == 0:
                                     bbox = np.array(obj.bboxs).reshape((2, 2))
-                                    point_pixel = bbox.mean(axis=0)
-                                    point_pixel = point_pixel.astype(int)
+                                    point_pixel = bbox.mean(axis=0).astype(int)
                                     point = (
                                         self.get_point_tool.get_one_point_from_depth(
                                             depth_image,
@@ -142,8 +140,7 @@ class YoloDetect:
                                         "no keypoints, can't get geometry_center, and will caluculate centor by bbox"
                                     )
                                     bbox = np.array(obj.bboxs).reshape((2, 2))
-                                    point_pixel = bbox.mean(axis=0)
-                                    point_pixel = point_pixel.astype(int)
+                                    point_pixel = bbox.mean(axis=0).astype(int)
                                     point = (
                                         self.get_point_tool.get_one_point_from_depth(
                                             depth_image,
@@ -159,8 +156,8 @@ class YoloDetect:
                                         tmp_ros_point.z = point[2]
                                         obj.centor_point.append(tmp_ros_point)
                                 else:
-                                    keypoints = np.array(obj.keypoints).reshape((2, 2))
-                                    point_pixel = keypoints.mean(axis=0)
+                                    keypoints = np.array(obj.keypoints).reshape((2, 3))
+                                    point_pixel = keypoints.mean(axis=0).astype(int)
                                     point = (
                                         self.get_point_tool.get_one_point_from_depth(
                                             depth_image,
@@ -193,7 +190,13 @@ class YoloDetect:
                                     tmp_ros_point.z = point[2]
                                     obj.centor_point.append(tmp_ros_point)
                             if transform is not None and len(obj.centor_point) > 0:
-                                obj.centor_point = tf2_geometry_msgs.do_transform_point(obj.centor_point, transform).point
+                                p = PointStamped()
+                                p.point = obj.centor_point[0]
+                                obj.centor_point[0] = (
+                                    tf2_geometry_msgs.do_transform_point(
+                                        obj.centor_point[0], transform
+                                    ).point
+                                )
                         if combined_img is not None:
                             combined_img = self.depth_to_gray_color(combined_img)
                             self.result_img.append(combined_img)
@@ -208,11 +211,12 @@ class YoloDetect:
 
     def detect_from_ros_img(self, img: Image):
         cv_image = self.ros_img_to_cv(img)
-        results = self.model_(cv_image)
+        # results = self.model_(cv_image)
+        results = self.detect_from_ndarray(cv_image)
         return results
 
     def detect_from_ndarray(self, img: np.ndarray):
-        results = self.model_(img)
+        results = self.model_.predict(img, imgsz=640, iou=0.5, conf=0.5)
         return results
 
     def process_yolo_result2fnii_ros_objects(
